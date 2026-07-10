@@ -1,6 +1,8 @@
 import calendar
 import ctypes
 import datetime
+import errno
+import logging
 import os
 import socket
 import sys
@@ -22,11 +24,24 @@ PANEL_HEIGHT = 720
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 
+# This runs as a windowless .pyw process with no console, so without a log file
+# an unhandled exception anywhere just kills the app with zero trace.
+logging.basicConfig(
+    filename=os.path.join(SCRIPT_DIR, "error.log"),
+    level=logging.ERROR,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+_ADDR_IN_USE = {errno.EADDRINUSE, getattr(errno, "WSAEADDRINUSE", None)}
+
 # Bound for the lifetime of the process; a second launch fails to bind and exits.
 _lock_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 try:
     _lock_socket.bind(("127.0.0.1", LOCK_PORT))
-except OSError:
+except OSError as exc:
+    if exc.errno not in _ADDR_IN_USE:
+        logger.error("Failed to bind lock port %d: %s", LOCK_PORT, exc)
     sys.exit(0)
 
 
@@ -493,9 +508,24 @@ class Api:
 
 class ControlPanelApi:
     def get_stats(self):
-        return squat_db.stats()
+        try:
+            return squat_db.stats()
+        except Exception:
+            logger.exception("get_stats failed")
+            raise
 
     def get_trend(self, mode, offset):
+        try:
+            return self._compute_trend(mode, offset)
+        except (ValueError, OverflowError):
+            # Clicking "previous period" enough times can walk the computed
+            # date past datetime's year-1 floor; fall back to the current period.
+            return self._compute_trend(mode, 0)
+        except Exception:
+            logger.exception("get_trend failed (mode=%s, offset=%s)", mode, offset)
+            raise
+
+    def _compute_trend(self, mode, offset):
         today = datetime.date.today()
 
         if mode == "week":
@@ -526,13 +556,17 @@ class ControlPanelApi:
         return {"label": label, "dates": dates, "values": values}
 
     def get_heatmap(self, year):
-        totals = squat_db.year_daily_totals(int(year))
-        return {
-            "totals": totals,
-            "streak": squat_db.current_streak(),
-            "best": squat_db.best_day(),
-            "year_total": sum(totals.values()),
-        }
+        try:
+            totals = squat_db.year_daily_totals(int(year))
+            return {
+                "totals": totals,
+                "streak": squat_db.current_streak(),
+                "best": squat_db.best_day(),
+                "year_total": sum(totals.values()),
+            }
+        except Exception:
+            logger.exception("get_heatmap failed (year=%s)", year)
+            raise
 
 
 def apply_rounded_corners(window, width, height, radius):
@@ -596,7 +630,10 @@ class SquatApp:
             if not timed_out:
                 break
             if not self.paused:
-                self.show_popup()
+                try:
+                    self.show_popup()
+                except Exception:
+                    logger.exception("Failed to show popup")
 
     def show_popup(self):
         total = squat_db.todays_total()
@@ -607,7 +644,10 @@ class SquatApp:
         self.show_popup()
 
     def on_done(self):
-        squat_db.log_completion(SQUATS_PER_REMINDER)
+        try:
+            squat_db.log_completion(SQUATS_PER_REMINDER)
+        except Exception:
+            logger.exception("Failed to log completion")
         self.window.hide()
         self.update_tray_menu()
 
@@ -658,7 +698,10 @@ def build_tray_icon(app):
         return img
 
     def on_control_panel(icon, item):
-        app.open_control_panel()
+        try:
+            app.open_control_panel()
+        except Exception:
+            logger.exception("Failed to open control panel")
 
     def on_toggle_pause(icon, item):
         app.toggle_pause()
@@ -667,7 +710,11 @@ def build_tray_icon(app):
         return "Resume Reminders" if app.paused else "Pause Reminders"
 
     def today_text(item):
-        return f"Today: {squat_db.todays_total()} squats"
+        try:
+            return f"Today: {squat_db.todays_total()} squats"
+        except Exception:
+            logger.exception("Failed to read today's total")
+            return "Today: — squats"
 
     def on_quit(icon, item):
         app.quit_app()
@@ -683,9 +730,13 @@ def build_tray_icon(app):
 
 
 def main():
-    squat_db.init_db()
-    app = SquatApp()
-    app.start()
+    try:
+        squat_db.init_db()
+        app = SquatApp()
+        app.start()
+    except Exception:
+        logger.exception("Fatal error, exiting")
+        raise
 
 
 if __name__ == "__main__":

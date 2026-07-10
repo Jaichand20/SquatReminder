@@ -1,5 +1,6 @@
 squat_log.csv
 squat_log.csv.migrated
 squats.db
+error.log
 __pycache__/
 *.pyc

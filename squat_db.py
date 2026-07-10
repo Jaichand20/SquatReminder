@@ -1,11 +1,15 @@
 import csv
 import datetime
+import logging
 import os
 import sqlite3
+from contextlib import contextmanager
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(SCRIPT_DIR, "squats.db")
 LEGACY_CSV = os.path.join(SCRIPT_DIR, "squat_log.csv")
+
+logger = logging.getLogger(__name__)
 
 
 def _connect():
@@ -22,48 +26,58 @@ def _connect():
     return conn
 
 
-def init_db():
+@contextmanager
+def _connection():
+    """Yields a connection, guaranteeing it's closed even if a query raises."""
     conn = _connect()
-    conn.close()
+    try:
+        yield conn
+    finally:
+        conn.close()
+
+
+def init_db():
+    with _connection():
+        pass
     _migrate_csv_if_needed()
 
 
 def _migrate_csv_if_needed():
     if not os.path.exists(LEGACY_CSV):
         return
-    conn = _connect()
-    already_populated = conn.execute("SELECT COUNT(*) FROM squats").fetchone()[0] > 0
-    if not already_populated:
-        with open(LEGACY_CSV, newline="", encoding="utf-8") as f:
-            rows = [(row["timestamp"], int(row["squats"])) for row in csv.DictReader(f)]
-        if rows:
-            conn.executemany("INSERT INTO squats (timestamp, count) VALUES (?, ?)", rows)
-            conn.commit()
-    conn.close()
-    os.replace(LEGACY_CSV, LEGACY_CSV + ".migrated")
+    try:
+        with _connection() as conn:
+            already_populated = conn.execute("SELECT COUNT(*) FROM squats").fetchone()[0] > 0
+            if not already_populated:
+                with open(LEGACY_CSV, newline="", encoding="utf-8") as f:
+                    rows = [(row["timestamp"], int(row["squats"])) for row in csv.DictReader(f)]
+                if rows:
+                    conn.executemany("INSERT INTO squats (timestamp, count) VALUES (?, ?)", rows)
+                    conn.commit()
+        os.replace(LEGACY_CSV, LEGACY_CSV + ".migrated")
+    except Exception:
+        logger.exception("Failed to migrate legacy CSV %s; left in place for retry", LEGACY_CSV)
 
 
 def log_completion(count):
-    conn = _connect()
-    conn.execute(
-        "INSERT INTO squats (timestamp, count) VALUES (?, ?)",
-        (datetime.datetime.now().isoformat(timespec="seconds"), count),
-    )
-    conn.commit()
-    conn.close()
+    with _connection() as conn:
+        conn.execute(
+            "INSERT INTO squats (timestamp, count) VALUES (?, ?)",
+            (datetime.datetime.now().isoformat(timespec="seconds"), count),
+        )
+        conn.commit()
 
 
 def _sum_between(start_date, end_date):
     """Sum of counts where the date part of timestamp is in [start_date, end_date)."""
-    conn = _connect()
-    total = conn.execute(
-        """
-        SELECT COALESCE(SUM(count), 0) FROM squats
-        WHERE substr(timestamp, 1, 10) >= ? AND substr(timestamp, 1, 10) < ?
-        """,
-        (start_date, end_date),
-    ).fetchone()[0]
-    conn.close()
+    with _connection() as conn:
+        total = conn.execute(
+            """
+            SELECT COALESCE(SUM(count), 0) FROM squats
+            WHERE substr(timestamp, 1, 10) >= ? AND substr(timestamp, 1, 10) < ?
+            """,
+            (start_date, end_date),
+        ).fetchone()[0]
     return total
 
 
@@ -73,9 +87,8 @@ def todays_total():
 
 
 def all_time_total():
-    conn = _connect()
-    total = conn.execute("SELECT COALESCE(SUM(count), 0) FROM squats").fetchone()[0]
-    conn.close()
+    with _connection() as conn:
+        total = conn.execute("SELECT COALESCE(SUM(count), 0) FROM squats").fetchone()[0]
     return total
 
 
@@ -94,33 +107,31 @@ def stats():
 
 def daily_totals(start_date, end_date):
     """{'YYYY-MM-DD': total} for every date with activity in [start_date, end_date)."""
-    conn = _connect()
-    rows = conn.execute(
-        """
-        SELECT substr(timestamp, 1, 10) AS d, SUM(count)
-        FROM squats
-        WHERE substr(timestamp, 1, 10) >= ? AND substr(timestamp, 1, 10) < ?
-        GROUP BY d
-        """,
-        (start_date, end_date),
-    ).fetchall()
-    conn.close()
+    with _connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT substr(timestamp, 1, 10) AS d, SUM(count)
+            FROM squats
+            WHERE substr(timestamp, 1, 10) >= ? AND substr(timestamp, 1, 10) < ?
+            GROUP BY d
+            """,
+            (start_date, end_date),
+        ).fetchall()
     return {d: total for d, total in rows}
 
 
 def monthly_totals(year):
     """List of 12 totals (Jan..Dec) for the given year."""
-    conn = _connect()
-    rows = conn.execute(
-        """
-        SELECT substr(timestamp, 6, 2) AS m, SUM(count)
-        FROM squats
-        WHERE substr(timestamp, 1, 4) = ?
-        GROUP BY m
-        """,
-        (f"{year:04d}",),
-    ).fetchall()
-    conn.close()
+    with _connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT substr(timestamp, 6, 2) AS m, SUM(count)
+            FROM squats
+            WHERE substr(timestamp, 1, 4) = ?
+            GROUP BY m
+            """,
+            (f"{year:04d}",),
+        ).fetchall()
     totals = [0] * 12
     for m, total in rows:
         totals[int(m) - 1] = total
@@ -132,9 +143,8 @@ def year_daily_totals(year):
 
 
 def current_streak():
-    conn = _connect()
-    rows = conn.execute("SELECT DISTINCT substr(timestamp, 1, 10) FROM squats").fetchall()
-    conn.close()
+    with _connection() as conn:
+        rows = conn.execute("SELECT DISTINCT substr(timestamp, 1, 10) FROM squats").fetchall()
     active_days = {r[0] for r in rows}
     if not active_days:
         return 0
@@ -152,14 +162,13 @@ def current_streak():
 
 
 def best_day():
-    conn = _connect()
-    row = conn.execute(
-        """
-        SELECT substr(timestamp, 1, 10) AS d, SUM(count) AS total
-        FROM squats GROUP BY d ORDER BY total DESC LIMIT 1
-        """
-    ).fetchone()
-    conn.close()
+    with _connection() as conn:
+        row = conn.execute(
+            """
+            SELECT substr(timestamp, 1, 10) AS d, SUM(count) AS total
+            FROM squats GROUP BY d ORDER BY total DESC LIMIT 1
+            """
+        ).fetchone()
     if row is None:
         return None
     return {"date": row[0], "count": row[1]}
