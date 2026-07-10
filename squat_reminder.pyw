@@ -165,8 +165,8 @@ class SquatApp:
         self.window = webview.create_window(
             "Squat Reminder", html=POPUP_HTML, js_api=self.api,
             width=WINDOW_WIDTH, height=WINDOW_HEIGHT, x=pos_x, y=pos_y,
-            frameless=True, easy_drag=False, on_top=True, resizable=False,
-            hidden=True, shadow=True, background_color=CARD_BACKGROUND,
+            frameless=True, easy_drag=True, on_top=True, resizable=False,
+            hidden=True, shadow=False, background_color=CARD_BACKGROUND,
         )
         self.window.events.closing += self._on_closing
         self.window.events.loaded += self._on_loaded
