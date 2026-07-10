@@ -1,4 +1,5 @@
 import csv
+import ctypes
 import datetime
 import os
 import socket
@@ -12,6 +13,8 @@ SQUATS_PER_REMINDER = 10
 LOCK_PORT = 47653
 WINDOW_WIDTH = 360
 WINDOW_HEIGHT = 460
+CARD_BACKGROUND = "#131315"
+CORNER_RADIUS = 26
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(SCRIPT_DIR, "squat_log.csv")
@@ -58,14 +61,14 @@ POPUP_HTML = f"""<!doctype html>
 <style>
   html, body {{
     margin: 0; padding: 0; width: 100%; height: 100%;
-    background: transparent; overflow: hidden;
+    background: {CARD_BACKGROUND}; overflow: hidden;
   }}
   .card {{
     width: 100%; height: 100%; box-sizing: border-box;
-    border-radius: 26px;
+    border-radius: {CORNER_RADIUS}px;
     background:
       radial-gradient(130% 85% at 50% -8%, rgba(255, 69, 88, 0.32), transparent 55%),
-      #131315;
+      {CARD_BACKGROUND};
     display: flex; flex-direction: column; align-items: center;
     padding: 40px 32px 22px;
     font-family: -apple-system, "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
@@ -135,6 +138,16 @@ class Api:
         self._app.on_skip()
 
 
+def apply_rounded_corners(window, width, height, radius):
+    # pywebview's transparent=True doesn't give true desktop-level transparency on
+    # Windows (the Form's own background stays opaque white), which showed up as
+    # white squares in the corners outside the CSS border-radius. Clipping the
+    # actual window shape via SetWindowRgn is the reliable fix.
+    hwnd = ctypes.c_void_p(window.native.Handle.ToInt64())
+    region = ctypes.windll.gdi32.CreateRoundRectRgn(0, 0, width + 1, height + 1, radius * 2, radius * 2)
+    ctypes.windll.user32.SetWindowRgn(hwnd, region, True)
+
+
 class SquatApp:
     def __init__(self):
         self.window = None
@@ -153,9 +166,10 @@ class SquatApp:
             "Squat Reminder", html=POPUP_HTML, js_api=self.api,
             width=WINDOW_WIDTH, height=WINDOW_HEIGHT, x=pos_x, y=pos_y,
             frameless=True, easy_drag=False, on_top=True, resizable=False,
-            hidden=True, transparent=True, shadow=True,
+            hidden=True, shadow=True, background_color=CARD_BACKGROUND,
         )
         self.window.events.closing += self._on_closing
+        self.window.events.loaded += self._on_loaded
         webview.start(self._run_background, debug=False)
 
     def _on_closing(self):
@@ -163,6 +177,11 @@ class SquatApp:
             return True
         self.window.hide()
         return False
+
+    def _on_loaded(self):
+        # The native Form handle only exists once content has loaded, even for
+        # a hidden window -- can't apply this any earlier.
+        apply_rounded_corners(self.window, WINDOW_WIDTH, WINDOW_HEIGHT, CORNER_RADIUS)
 
     def _run_background(self):
         threading.Thread(target=self._scheduler_loop, daemon=True).start()
