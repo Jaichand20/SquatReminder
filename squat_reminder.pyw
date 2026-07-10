@@ -4,12 +4,14 @@ import os
 import socket
 import sys
 import threading
-import tkinter as tk
-from tkinter import font as tkfont
+
+import webview
 
 INTERVAL_MINUTES = 60
 SQUATS_PER_REMINDER = 10
 LOCK_PORT = 47653
+WINDOW_WIDTH = 360
+WINDOW_HEIGHT = 460
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 LOG_FILE = os.path.join(SCRIPT_DIR, "squat_log.csv")
@@ -49,108 +51,153 @@ def todays_total():
     return total
 
 
-class AppState:
-    def __init__(self):
-        self.paused = False
+POPUP_HTML = f"""<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  html, body {{
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: transparent; overflow: hidden;
+  }}
+  .card {{
+    width: 100%; height: 100%; box-sizing: border-box;
+    border-radius: 26px;
+    background:
+      radial-gradient(130% 85% at 50% -8%, rgba(255, 69, 88, 0.32), transparent 55%),
+      #131315;
+    display: flex; flex-direction: column; align-items: center;
+    padding: 40px 32px 22px;
+    font-family: -apple-system, "Segoe UI Variable Display", "Segoe UI", system-ui, sans-serif;
+    color: #f7f7f8;
+    -webkit-user-select: none; user-select: none;
+  }}
+  h1 {{
+    font-size: 27px; font-weight: 700; margin: 12px 0 10px;
+    letter-spacing: -0.02em; text-align: center;
+  }}
+  .sub {{ font-size: 14.5px; color: #a2a2a8; margin: 0 0 24px; text-align: center; line-height: 1.5; }}
+  .count-block {{ display: flex; align-items: baseline; gap: 8px; margin-bottom: 20px; }}
+  .count-block .num {{
+    font-size: 44px; font-weight: 750; letter-spacing: -0.02em; color: #ffffff;
+    font-variant-numeric: tabular-nums; line-height: 1;
+  }}
+  .count-block .label {{ font-size: 13.5px; font-weight: 500; color: #8f8f96; padding-bottom: 4px; }}
+  .actions {{ width: 100%; display: flex; flex-direction: column; gap: 10px; margin-top: auto; }}
+  .btn-primary {{
+    width: 100%; border: none; padding: 14px; border-radius: 15px;
+    background: linear-gradient(120deg, #ff5f6d, #ff375f);
+    color: #ffffff; font-size: 15px; font-weight: 650; cursor: pointer;
+    box-shadow: 0 10px 22px -8px rgba(255, 55, 95, 0.55);
+  }}
+  .btn-ghost {{
+    border: 1px solid rgba(255, 255, 255, 0.14); background: none; color: #d6d6d9;
+    font-size: 13.5px; font-weight: 500; padding: 10px; border-radius: 15px; cursor: pointer;
+  }}
+  button:focus-visible {{ outline: 2px solid #7ab8ff; outline-offset: 2px; }}
+  .btn-primary:hover, .btn-ghost:hover {{ filter: brightness(1.08); }}
+  .btn-primary:active, .btn-ghost:active {{ transform: scale(0.98); }}
+</style>
+</head>
+<body>
+  <div class="card">
+    <h1>Time to move</h1>
+    <p class="sub">{SQUATS_PER_REMINDER} squats. Thirty seconds.</p>
+    <div class="count-block">
+      <span class="num" id="count">{todays_total()}</span>
+      <span class="label">squats today</span>
+    </div>
+    <div class="actions">
+      <button class="btn-primary" onclick="pywebview.api.done()">Done ✓ (+{SQUATS_PER_REMINDER})</button>
+      <button class="btn-ghost" onclick="pywebview.api.skip()">Skip</button>
+    </div>
+  </div>
+<script>
+function setCount(n) {{ document.getElementById('count').textContent = n; }}
+</script>
+</body>
+</html>
+"""
 
 
-state = AppState()
+class Api:
+    def __init__(self, app):
+        # Underscore prefix: pywebview recursively introspects public attributes
+        # of js_api to build JS bindings, and would otherwise walk into
+        # app.window.native (a .NET control tree with circular Accessibility
+        # references), which is skipped for names starting with "_".
+        self._app = app
+
+    def done(self):
+        self._app.on_done()
+
+    def skip(self):
+        self._app.on_skip()
 
 
 class SquatApp:
     def __init__(self):
-        self.root = tk.Tk()
-        self.root.withdraw()
-        self.popup = None
-        self.timer_id = None
+        self.window = None
+        self.api = Api(self)
+        self.paused = False
         self.tray_icon = None
-        self.schedule_next()
+        self._stop = threading.Event()
+        self._quitting = False
 
-    def schedule_next(self, delay_ms=None):
-        if delay_ms is None:
-            delay_ms = INTERVAL_MINUTES * 60 * 1000
-        if self.timer_id is not None:
-            self.root.after_cancel(self.timer_id)
-        self.timer_id = self.root.after(delay_ms, self.on_timer)
+    def start(self):
+        screen = webview.screens[0]
+        pos_x = (screen.width - WINDOW_WIDTH) // 2
+        pos_y = (screen.height - WINDOW_HEIGHT) // 2
 
-    def on_timer(self):
-        if state.paused:
-            self.schedule_next()
-            return
-        self.show_popup()
+        self.window = webview.create_window(
+            "Squat Reminder", html=POPUP_HTML, js_api=self.api,
+            width=WINDOW_WIDTH, height=WINDOW_HEIGHT, x=pos_x, y=pos_y,
+            frameless=True, easy_drag=False, on_top=True, resizable=False,
+            hidden=True, transparent=True, shadow=True,
+        )
+        self.window.events.closing += self._on_closing
+        webview.start(self._run_background, debug=False)
+
+    def _on_closing(self):
+        if self._quitting:
+            return True
+        self.window.hide()
+        return False
+
+    def _run_background(self):
+        threading.Thread(target=self._scheduler_loop, daemon=True).start()
+        self.tray_icon = build_tray_icon(self)
+        if self.tray_icon is not None:
+            self.tray_icon.run()
+        else:
+            self._stop.wait()
+
+    def _scheduler_loop(self):
+        while not self._stop.is_set():
+            timed_out = not self._stop.wait(INTERVAL_MINUTES * 60)
+            if not timed_out:
+                break
+            if not self.paused:
+                self.show_popup()
+
+    def show_popup(self):
+        total = todays_total()
+        self.window.evaluate_js(f"setCount({total})")
+        self.window.show()
 
     def trigger_now(self):
         self.show_popup()
 
-    def show_popup(self):
-        if self.popup is not None and self.popup.winfo_exists():
-            self.popup.lift()
-            self.popup.focus_force()
-            return
-
-        popup = tk.Toplevel(self.root)
-        self.popup = popup
-        popup.title("Squat Time!")
-        popup.attributes("-topmost", True)
-        popup.resizable(False, False)
-        popup.protocol("WM_DELETE_WINDOW", self.on_skip)
-
-        width, height = 420, 260
-        screen_w = popup.winfo_screenwidth()
-        screen_h = popup.winfo_screenheight()
-        x = (screen_w - width) // 2
-        y = (screen_h - height) // 2
-        popup.geometry(f"{width}x{height}+{x}+{y}")
-
-        title_font = tkfont.Font(size=20, weight="bold")
-        body_font = tkfont.Font(size=12)
-
-        tk.Label(
-            popup, text=f"Time for {SQUATS_PER_REMINDER} squats! \U0001F3CB",
-            font=title_font, pady=20, wraplength=380,
-        ).pack()
-        tk.Label(
-            popup, text=f"Today: {todays_total()} squats", font=body_font,
-        ).pack(pady=5)
-
-        btn_frame = tk.Frame(popup)
-        btn_frame.pack(pady=20)
-
-        tk.Button(
-            btn_frame, text=f"Done ✅  (+{SQUATS_PER_REMINDER})", font=body_font,
-            bg="#4CAF50", fg="white", padx=15, pady=8,
-            command=self.on_done,
-        ).pack(side="left", padx=10)
-
-        tk.Button(
-            btn_frame, text="Skip", font=body_font, padx=15, pady=8,
-            command=self.on_skip,
-        ).pack(side="left", padx=10)
-
-        popup.deiconify()
-        popup.lift()
-        popup.attributes("-topmost", True)
-        popup.focus_force()
-        popup.grab_set()
-
-    def _close_popup(self):
-        if self.popup is not None:
-            self.popup.grab_release()
-            self.popup.destroy()
-            self.popup = None
-
     def on_done(self):
         log_completion()
-        self._close_popup()
-        self.schedule_next()
+        self.window.hide()
         self.update_tray_menu()
 
     def on_skip(self):
-        self._close_popup()
-        self.schedule_next()
+        self.window.hide()
 
     def toggle_pause(self):
-        state.paused = not state.paused
+        self.paused = not self.paused
         self.update_tray_menu()
 
     def update_tray_menu(self):
@@ -158,12 +205,11 @@ class SquatApp:
             self.tray_icon.update_menu()
 
     def quit_app(self):
+        self._quitting = True
+        self._stop.set()
         if self.tray_icon is not None:
             self.tray_icon.stop()
-        self.root.destroy()
-
-    def run(self):
-        self.root.mainloop()
+        self.window.destroy()
 
 
 def build_tray_icon(app):
@@ -176,23 +222,23 @@ def build_tray_icon(app):
     def make_image():
         img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
         draw = ImageDraw.Draw(img)
-        draw.ellipse((6, 6, 58, 58), fill="#4CAF50")
+        draw.ellipse((6, 6, 58, 58), fill="#ff375f")
         return img
 
     def on_squat_now(icon, item):
-        app.root.after(0, app.trigger_now)
+        app.trigger_now()
 
     def on_toggle_pause(icon, item):
-        app.root.after(0, app.toggle_pause)
+        app.toggle_pause()
 
     def pause_text(item):
-        return "Resume Reminders" if state.paused else "Pause Reminders"
+        return "Resume Reminders" if app.paused else "Pause Reminders"
 
     def today_text(item):
         return f"Today: {todays_total()} squats"
 
     def on_quit(icon, item):
-        app.root.after(0, app.quit_app)
+        app.quit_app()
 
     menu = pystray.Menu(
         pystray.MenuItem("Squat Now", on_squat_now),
@@ -206,11 +252,7 @@ def build_tray_icon(app):
 
 def main():
     app = SquatApp()
-    tray_icon = build_tray_icon(app)
-    if tray_icon is not None:
-        app.tray_icon = tray_icon
-        threading.Thread(target=tray_icon.run, daemon=True).start()
-    app.run()
+    app.start()
 
 
 if __name__ == "__main__":
