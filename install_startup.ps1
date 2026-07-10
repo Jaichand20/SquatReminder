@@ -4,8 +4,8 @@ $ErrorActionPreference = "Stop"
 $scriptDir = $PSScriptRoot
 $pyw = Join-Path $scriptDir "squat_reminder.pyw"
 
-Write-Host "Installing Python dependencies (pystray, pillow)..."
-pip install pystray pillow
+Write-Host "Installing Python dependencies (pywebview, pystray, pillow)..."
+pip install pywebview pystray pillow
 
 $pythonwCmd = Get-Command pythonw.exe -ErrorAction SilentlyContinue
 if ($pythonwCmd) {

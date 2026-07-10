@@ -4,18 +4,19 @@ A tiny Windows tray app that pops up every hour with a reminder to do 10 squats.
 
 ## What it does
 - Runs quietly in the system tray.
-- Every hour, shows an always-on-top popup: **Done ✅ (+10)** or **Skip**.
+- Every hour, shows a centered, always-on-top popup: **Done ✓ (+10)** or **Skip**.
+- The popup is a small dark card (rounded corners, transparent background) showing a plain running count of today's squats — no goals, no progress ring.
 - Logs every completed reminder to `squat_log.csv` (timestamp + squat count).
 - Tray menu: **Squat Now** (trigger immediately), **Pause/Resume Reminders**, **Today: N squats**, **Quit**.
 - Starts automatically at login (after running the installer once).
 
 ## Setup
-1. Requires Python 3 with tkinter (bundled with standard Windows installs).
+1. Requires Python 3 and the [WebView2 runtime](https://developer.microsoft.com/microsoft-edge/webview2/) (preinstalled on Windows 10/11 alongside Edge).
 2. Run the installer once, from PowerShell in this folder:
    ```powershell
    .\install_startup.ps1
    ```
-   This installs `pystray` + `pillow` and adds a shortcut to your Startup folder.
+   This installs `pywebview` + `pystray` + `pillow` and adds a shortcut to your Startup folder.
 
 ## Run it now (without rebooting)
 ```powershell
