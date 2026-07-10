@@ -4,10 +4,11 @@ A tiny Windows tray app that pops up every hour with a reminder to do 10 squats.
 
 ## What it does
 - Runs quietly in the system tray.
-- Every hour, shows a centered, always-on-top popup: **Done ✓ (+10)** or **Skip**.
-- The popup is a small dark card (rounded corners, transparent background) showing a plain running count of today's squats — no goals, no progress ring.
-- Logs every completed reminder to `squat_log.csv` (timestamp + squat count).
-- Tray menu: **Squat Now** (trigger immediately), **Pause/Resume Reminders**, **Today: N squats**, **Quit**.
+- Every hour, shows a centered, always-on-top, draggable popup: **Done ✓ (+10)** or **Skip**.
+- The popup is a small dark card (rounded corners, no OS chrome) showing a plain running count of today's squats — no goals, no progress ring.
+- **Control Panel** (tray menu): today/week/month/all-time stat tiles, a trend chart you can switch between Week / Month / Year (with ‹ › navigation through past periods), and a GitHub-style year heatmap with current streak, best day, and year total.
+- Every completed reminder is logged to a local **SQLite** database (`squats.db`).
+- Tray menu: **Control Panel**, **Pause/Resume Reminders**, **Today: N squats**, **Quit**.
 - Starts automatically at login (after running the installer once).
 
 ## Setup
@@ -31,8 +32,8 @@ INTERVAL_MINUTES = 60
 SQUATS_PER_REMINDER = 10
 ```
 
-## The log
-`squat_log.csv` is a simple `timestamp,squats` CSV appended to on every "Done". It's gitignored since it's personal data — delete it any time to reset your count.
+## The data
+`squats.db` is a small SQLite database (one row per completed reminder). It's gitignored since it's personal data — delete it any time to reset your history. If you're upgrading from an older version that used `squat_log.csv`, it's migrated into `squats.db` automatically on first run and renamed to `squat_log.csv.migrated`.
 
 ## Uninstall
 Delete the shortcut from your Startup folder:
