@@ -1,12 +1,12 @@
 # Squat Reminder
 
-A tiny Windows tray app that pops up every hour with a reminder to do 10 squats.
+A tiny Windows tray app that pops up on a configurable interval (default: every hour) with a reminder to do 10 squats.
 
 ## What it does
 - Runs quietly in the system tray.
-- Every hour, shows a centered, always-on-top, draggable popup: **Done ✓ (+10)** or **Skip**.
+- On the configured interval, shows a centered, always-on-top, draggable popup: **Done ✓ (+10)** or **Skip**.
 - The popup is a small dark card (rounded corners, no OS chrome) showing a plain running count of today's squats — no goals, no progress ring.
-- **Control Panel** (tray menu): today/week/month/all-time stat tiles, a trend chart you can switch between Week / Month / Year (with ‹ › navigation through past periods), and a GitHub-style year heatmap with current streak, best day, and year total.
+- **Control Panel** (tray menu): today/week/month/all-time stat tiles, a reminder-interval control, a trend chart you can switch between Week / Month / Year (with ‹ › navigation through past periods), and a GitHub-style year heatmap with current streak, best day, and year total.
 - Every completed reminder is logged to a local **SQLite** database (`squats.db`).
 - Tray menu: **Control Panel**, **Pause/Resume Reminders**, **Today: N squats**, **Quit**.
 - Starts automatically at login (after running the installer once).
@@ -26,9 +26,10 @@ pythonw squat_reminder.pyw
 Or just double-click `squat_reminder.pyw`.
 
 ## Changing the interval
-Edit the constants at the top of `squat_reminder.pyw`:
+Open **Control Panel** from the tray menu and use the **Reminder interval** section — pick a preset (15/30/45/60/90/120 min) or enter a custom value. Changes apply immediately, interrupting the current countdown; no restart needed. The interval is stored in `squats.db`, not in source.
+
+To change squats-per-reminder, edit the constant at the top of `squat_reminder.pyw`:
 ```python
-INTERVAL_MINUTES = 60
 SQUATS_PER_REMINDER = 10
 ```
 

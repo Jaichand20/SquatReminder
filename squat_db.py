@@ -9,6 +9,11 @@ SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_FILE = os.path.join(SCRIPT_DIR, "squats.db")
 LEGACY_CSV = os.path.join(SCRIPT_DIR, "squat_log.csv")
 
+DEFAULT_INTERVAL_MINUTES = 60
+MIN_INTERVAL_MINUTES = 1
+MAX_INTERVAL_MINUTES = 1440  # 24h sanity ceiling
+_INTERVAL_KEY = "interval_minutes"
+
 logger = logging.getLogger(__name__)
 
 
@@ -20,6 +25,14 @@ def _connect():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp TEXT NOT NULL,
             count INTEGER NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
         )
         """
     )
@@ -172,3 +185,43 @@ def best_day():
     if row is None:
         return None
     return {"date": row[0], "count": row[1]}
+
+
+def get_interval_minutes():
+    with _connection() as conn:
+        row = conn.execute("SELECT value FROM settings WHERE key = ?", (_INTERVAL_KEY,)).fetchone()
+    if row is None:
+        return DEFAULT_INTERVAL_MINUTES
+    try:
+        value = int(row[0])
+    except (TypeError, ValueError):
+        logger.error("Corrupt interval_minutes setting %r; using default", row[0])
+        return DEFAULT_INTERVAL_MINUTES
+    if not (MIN_INTERVAL_MINUTES <= value <= MAX_INTERVAL_MINUTES):
+        logger.error("interval_minutes %r out of range; using default", value)
+        return DEFAULT_INTERVAL_MINUTES
+    return value
+
+
+def set_interval_minutes(minutes):
+    try:
+        as_float = float(minutes)
+        if as_float != int(as_float):
+            raise ValueError("not a whole number")
+        value = int(as_float)
+    except (TypeError, ValueError, OverflowError):
+        raise ValueError(f"Interval must be a whole number of minutes, got {minutes!r}")
+    if not (MIN_INTERVAL_MINUTES <= value <= MAX_INTERVAL_MINUTES):
+        raise ValueError(
+            f"Interval must be between {MIN_INTERVAL_MINUTES} and {MAX_INTERVAL_MINUTES} minutes"
+        )
+    with _connection() as conn:
+        conn.execute(
+            """
+            INSERT INTO settings (key, value) VALUES (?, ?)
+            ON CONFLICT(key) DO UPDATE SET value = excluded.value
+            """,
+            (_INTERVAL_KEY, str(value)),
+        )
+        conn.commit()
+    return value
