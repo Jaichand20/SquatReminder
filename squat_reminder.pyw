@@ -12,7 +12,6 @@ import webview
 
 import squat_db
 
-INTERVAL_MINUTES = 60
 SQUATS_PER_REMINDER = 10
 LOCK_PORT = 47653
 WINDOW_WIDTH = 360
@@ -171,6 +170,19 @@ CONTROL_PANEL_HTML = """<!doctype html>
   .nav-arrows button:disabled { opacity: 0.35; cursor: default; }
   .nav-arrows .range-label { min-width: 130px; text-align: center; font-variant-numeric: tabular-nums; }
 
+  .interval-controls { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .interval-custom { display: flex; gap: 8px; align-items: center; }
+  .interval-custom input {
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 7px;
+    color: var(--ink-primary); padding: 5px 8px; font-size: 12px; width: 90px; font-family: inherit;
+  }
+  .btn-apply {
+    background: var(--surface-2); border: 1px solid var(--border); color: var(--ink-secondary);
+    font-size: 12px; font-weight: 600; padding: 5px 11px; border-radius: 7px; cursor: pointer; font-family: inherit;
+  }
+  .btn-apply:hover { filter: brightness(1.15); }
+  .interval-status { font-size: 11.5px; color: var(--ink-muted); margin: 8px 0 0; min-height: 14px; }
+
   .heatmap-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 4px; }
   .year-nav { display: flex; align-items: center; gap: 10px; font-size: 12.5px; color: var(--ink-secondary); }
   .year-nav button { background: var(--surface-2); border: 1px solid var(--border); color: var(--ink-secondary); width: 22px; height: 22px; border-radius: 6px; cursor: pointer; font-size: 12px; line-height: 1; }
@@ -199,6 +211,25 @@ CONTROL_PANEL_HTML = """<!doctype html>
 <body>
 <div class="page">
   <div class="stats" id="stats"></div>
+
+  <div class="section">
+    <div class="section-head"><h2>Reminder interval</h2></div>
+    <div class="interval-controls">
+      <div class="seg" id="intervalPresets">
+        <button class="seg-btn" data-min="15">15m</button>
+        <button class="seg-btn" data-min="30">30m</button>
+        <button class="seg-btn" data-min="45">45m</button>
+        <button class="seg-btn" data-min="60">60m</button>
+        <button class="seg-btn" data-min="90">90m</button>
+        <button class="seg-btn" data-min="120">120m</button>
+      </div>
+      <div class="interval-custom">
+        <input type="number" id="intervalCustom" min="1" max="1440" placeholder="Custom (min)">
+        <button class="btn-apply" id="intervalApply">Set</button>
+      </div>
+    </div>
+    <p class="interval-status" id="intervalStatus"></p>
+  </div>
 
   <div class="section">
     <div class="section-head">
@@ -297,6 +328,48 @@ CONTROL_PANEL_HTML = """<!doctype html>
       `<div class="stat-tile"><p class="label">${label}</p><div class="value">${val.toLocaleString()}<small>squats</small></div></div>`
     ).join('');
   }
+
+  function markActivePreset(minutes) {
+    document.querySelectorAll('#intervalPresets .seg-btn').forEach(b => {
+      b.classList.toggle('active', Number(b.dataset.min) === minutes);
+    });
+  }
+
+  async function loadSettings() {
+    const s = await pywebview.api.get_settings();
+    markActivePreset(s.interval_minutes);
+  }
+
+  async function applyInterval(minutes) {
+    const status = document.getElementById('intervalStatus');
+    const result = await pywebview.api.set_interval(minutes);
+    if (result && result.error) {
+      status.style.color = 'var(--accent)';
+      status.textContent = result.error;
+      return;
+    }
+    markActivePreset(result.interval_minutes);
+    status.style.color = 'var(--ink-muted)';
+    status.textContent = 'Reminders every ' + result.interval_minutes + ' min.';
+  }
+
+  document.getElementById('intervalPresets').addEventListener('click', e => {
+    const btn = e.target.closest('.seg-btn');
+    if (!btn) return;
+    applyInterval(Number(btn.dataset.min));
+  });
+
+  document.getElementById('intervalApply').addEventListener('click', () => {
+    const raw = document.getElementById('intervalCustom').value;
+    const val = Number(raw);
+    if (!raw || !Number.isFinite(val)) {
+      const status = document.getElementById('intervalStatus');
+      status.style.color = 'var(--accent)';
+      status.textContent = 'Enter a number of minutes.';
+      return;
+    }
+    applyInterval(Math.round(val));
+  });
 
   let mode = 'month';
   let offset = 0;
@@ -476,6 +549,7 @@ CONTROL_PANEL_HTML = """<!doctype html>
 
   function boot() {
     loadStats();
+    loadSettings();
     renderTrend();
     renderHeatmap();
   }
@@ -507,6 +581,26 @@ class Api:
 
 
 class ControlPanelApi:
+    def __init__(self, app):
+        # Same underscore-prefix rationale as Api._app above.
+        self._app = app
+
+    def get_settings(self):
+        try:
+            return {"interval_minutes": self._app.interval_minutes}
+        except Exception:
+            logger.exception("get_settings failed")
+            raise
+
+    def set_interval(self, minutes):
+        try:
+            return {"interval_minutes": self._app.set_interval_minutes(minutes)}
+        except ValueError as exc:
+            return {"error": str(exc)}
+        except Exception:
+            logger.exception("set_interval failed (minutes=%s)", minutes)
+            raise
+
     def get_stats(self):
         try:
             return squat_db.stats()
@@ -584,10 +678,12 @@ class SquatApp:
         self.window = None
         self.api = Api(self)
         self.panel_window = None
-        self.panel_api = ControlPanelApi()
+        self.panel_api = ControlPanelApi(self)
         self.paused = False
         self.tray_icon = None
+        self.interval_minutes = squat_db.get_interval_minutes()
         self._stop = threading.Event()
+        self._cv = threading.Condition()
         self._quitting = False
 
     def start(self):
@@ -626,9 +722,12 @@ class SquatApp:
 
     def _scheduler_loop(self):
         while not self._stop.is_set():
-            timed_out = not self._stop.wait(INTERVAL_MINUTES * 60)
-            if not timed_out:
+            with self._cv:
+                woke_early = self._cv.wait(timeout=self.interval_minutes * 60)
+            if self._stop.is_set():
                 break
+            if woke_early:
+                continue  # interval changed elsewhere; restart the wait with the new value
             if not self.paused:
                 try:
                     self.show_popup()
@@ -642,6 +741,13 @@ class SquatApp:
 
     def trigger_now(self):
         self.show_popup()
+
+    def set_interval_minutes(self, minutes):
+        validated = squat_db.set_interval_minutes(minutes)  # persists + validates first
+        with self._cv:
+            self.interval_minutes = validated
+            self._cv.notify()
+        return validated
 
     def on_done(self):
         try:
@@ -679,6 +785,8 @@ class SquatApp:
     def quit_app(self):
         self._quitting = True
         self._stop.set()
+        with self._cv:
+            self._cv.notify()
         if self.tray_icon is not None:
             self.tray_icon.stop()
         self.window.destroy()
